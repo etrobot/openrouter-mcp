@@ -15,7 +15,7 @@ A Model Context Protocol (MCP) server that provides access to OpenRouter's exten
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/openrouter-mcp.git
+git clone https://github.com/th3nolo/openrouter-mcp.git
 cd openrouter-mcp
 
 # Install dependencies
