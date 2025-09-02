@@ -8,6 +8,7 @@ A Model Context Protocol (MCP) server that provides access to OpenRouter's exten
 - 🔍 List and search available models with pricing information
 - 💬 Chat with any model through a unified interface
 - 🔄 Compare responses from multiple models side-by-side
+- 🎨 Generate and edit images using OpenRouter's image models
 - 📊 Get detailed model information including context limits and capabilities
 - 🔧 Seamless integration with Claude Desktop and Claude Code
 
@@ -50,6 +51,10 @@ yarn build
   - Parameters: `model`, `message`, `max_tokens`, `temperature`, `system_prompt`
 - **`compare_models`** - Compare responses from multiple models
   - Parameters: `models[]`, `message`, `max_tokens`
+- **`generate_image`** - Generate images using OpenRouter image models
+  - Parameters: `prompt` (required), `model` (optional, defaults to google/gemini-2.5-flash-image-preview:free), `max_tokens`, `temperature`, `save_directory`
+- **`edit_image`** - Edit images using OpenRouter image models (supports multiple images)
+  - Parameters: `instruction`, `images[]` (required), `model` (optional, defaults to google/gemini-2.5-flash-image-preview:free), `max_tokens`, `temperature`, `save_directory`
 - **`get_model_info`** - Get detailed information about a specific model
   - Parameters: `model`
 
@@ -65,7 +70,7 @@ Add the server to Claude Code:
 
 ```bash
 claude mcp add openrouter -s user \
-  -e OPENROUTER_API_KEY=your_api_key_here \
+  -e OPENROUTER_API_KEY=your_openrouter_api_key_here \
   -- node /path/to/openrouter-mcp/dist/server.js
 ```
 
@@ -93,6 +98,8 @@ Once configured, you can use these commands in Claude:
 "List all available Gemma models"
 "Chat with gpt-4 and ask it to explain quantum computing"
 "Compare responses from claude-3-opus and gpt-4 about climate change"
+"Generate an image of a sunset over mountains using google/gemini-2.5-flash-image-preview:free"
+"Edit this image to make it brighter and add more clouds"
 "Get detailed information about google/gemini-pro"
 ```
 

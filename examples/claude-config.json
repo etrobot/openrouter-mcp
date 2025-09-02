@@ -2,12 +2,9 @@
   "mcpServers": {
     "openrouter": {
       "command": "node",
-      "args": ["/Users/tfproduct01/Documents/DEV/AI/openrouter-mcp/dist/server.js"],
+      "args": ["/path/to/openrouter-mcp/dist/server.js"],
       "env": {
-        "OPENROUTER_API_KEY": "your_openrouter_api_key_here",
-        "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
-        "OPENROUTER_SITE_URL": "http://localhost:3000",
-        "OPENROUTER_APP_NAME": "OpenRouter MCP Server"
+        "OPENROUTER_API_KEY": "your_openrouter_api_key_here"
       }
     }
   }
