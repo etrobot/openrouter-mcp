@@ -11,22 +11,54 @@ import {
 import axios from "axios";
 import { z } from "zod";
 import dotenv from "dotenv";
+import { writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, extname } from "path";
 
 // Load environment variables
 dotenv.config();
 
+// Content schemas for multimodal support
+const TextContentSchema = z.object({
+  type: z.literal("text"),
+  text: z.string(),
+});
+
+const ImageUrlContentSchema = z.object({
+  type: z.literal("image_url"),
+  image_url: z.object({
+    url: z.string().describe("Image URL or data URI (data:image/jpeg;base64,...)"),
+    detail: z.enum(["low", "high", "auto"]).optional().describe("Image detail level"),
+  }),
+});
+
+const ContentSchema = z.union([TextContentSchema, ImageUrlContentSchema]);
+
+const MessageContentSchema = z.union([
+  z.string().describe("Simple text message"),
+  z.array(ContentSchema).describe("Array of content objects for multimodal messages"),
+]);
+
 // Validation schemas
 const ChatRequestSchema = z.object({
   model: z.string().describe("OpenRouter model ID (e.g., 'openai/gpt-4')"),
-  message: z.string().describe("Message to send to the model"),
+  message: MessageContentSchema.describe("Message content (text or multimodal array)"),
   max_tokens: z.number().optional().default(1000).describe("Maximum tokens in response"),
   temperature: z.number().optional().default(0.7).describe("Temperature for response randomness"),
   system_prompt: z.string().optional().describe("System prompt for the conversation"),
+  save_directory: z.string().optional().describe("Directory to save generated images (will be created if doesn't exist)"),
+});
+
+const ImageGenerationSchema = z.object({
+  model: z.string().describe("OpenRouter image model ID (e.g., 'google/gemini-2.5-flash-image-preview:free')"),
+  prompt: z.string().describe("Text prompt for image generation"),
+  max_tokens: z.number().optional().default(1000).describe("Maximum tokens in response"),
+  temperature: z.number().optional().default(0.7).describe("Temperature for response randomness"),
+  save_directory: z.string().optional().describe("Directory to save generated images (will be created if doesn't exist)"),
 });
 
 const CompareModelsSchema = z.object({
   models: z.array(z.string()).describe("Array of model IDs to compare"),
-  message: z.string().describe("Message to send to all models"),
+  message: MessageContentSchema.describe("Message content (text or multimodal array)"),
   max_tokens: z.number().optional().default(500).describe("Maximum tokens per response"),
 });
 
@@ -46,6 +78,60 @@ const OPENROUTER_CONFIG = {
 if (!OPENROUTER_CONFIG.apiKey) {
   console.error("WARNING: OPENROUTER_API_KEY environment variable is not set!");
   console.error("Please set OPENROUTER_API_KEY to use the OpenRouter MCP server.");
+}
+
+// Utility functions for image handling
+function saveBase64Image(base64Data: string, directory: string, filename?: string): string {
+  // Ensure directory exists
+  if (!existsSync(directory)) {
+    mkdirSync(directory, { recursive: true });
+  }
+
+  // Extract image format from base64 data
+  const matches = base64Data.match(/^data:image\/([^;]+);base64,(.+)$/);
+  if (!matches) {
+    throw new Error("Invalid base64 image data format");
+  }
+
+  const imageType = matches[1]; // e.g., 'png', 'jpeg', 'jpg'
+  const actualBase64Data = matches[2];
+
+  // Generate filename if not provided
+  if (!filename) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    filename = `image_${timestamp}.${imageType}`;
+  } else if (!extname(filename)) {
+    filename = `${filename}.${imageType}`;
+  }
+
+  const filepath = join(directory, filename);
+
+  // Convert base64 to buffer and save
+  const imageBuffer = Buffer.from(actualBase64Data, 'base64');
+  writeFileSync(filepath, imageBuffer);
+
+  return filepath;
+}
+
+function saveResponseImages(images: any[], saveDirectory?: string): Array<{ url: string; savedPath?: string }> {
+  if (!saveDirectory || !images?.length) {
+    return images?.map(img => ({ url: img.image_url?.url || "" })) || [];
+  }
+
+  return images.map((img, index) => {
+    const imageUrl = img.image_url?.url || "";
+    let savedPath: string | undefined;
+
+    try {
+      if (imageUrl.startsWith('data:image/')) {
+        savedPath = saveBase64Image(imageUrl, saveDirectory, `generated_image_${index + 1}`);
+      }
+    } catch (error) {
+      console.error(`Failed to save image ${index + 1}:`, error);
+    }
+
+    return { url: imageUrl, savedPath };
+  });
 }
 
 class OpenRouterMCPServer {
@@ -144,7 +230,7 @@ class OpenRouterMCPServer {
           },
           {
             name: "chat_with_model",
-            description: "Send a message to a specific OpenRouter model",
+            description: "Send a message to a specific OpenRouter model (supports text and images)",
             inputSchema: {
               type: "object",
               properties: {
@@ -153,8 +239,50 @@ class OpenRouterMCPServer {
                   description: "OpenRouter model ID (e.g., 'openai/gpt-4')",
                 },
                 message: {
-                  type: "string",
-                  description: "Message to send to the model",
+                  oneOf: [
+                    {
+                      type: "string",
+                      description: "Simple text message",
+                    },
+                    {
+                      type: "array",
+                      description: "Multimodal message with text and/or images",
+                      items: {
+                        oneOf: [
+                          {
+                            type: "object",
+                            properties: {
+                              type: { type: "string", enum: ["text"] },
+                              text: { type: "string" },
+                            },
+                            required: ["type", "text"],
+                          },
+                          {
+                            type: "object",
+                            properties: {
+                              type: { type: "string", enum: ["image_url"] },
+                              image_url: {
+                                type: "object",
+                                properties: {
+                                  url: { 
+                                    type: "string",
+                                    description: "Image URL or data URI (data:image/jpeg;base64,...)",
+                                  },
+                                  detail: {
+                                    type: "string",
+                                    enum: ["low", "high", "auto"],
+                                    description: "Image detail level",
+                                  },
+                                },
+                                required: ["url"],
+                              },
+                            },
+                            required: ["type", "image_url"],
+                          },
+                        ],
+                      },
+                    },
+                  ],
                 },
                 max_tokens: {
                   type: "number",
@@ -170,13 +298,17 @@ class OpenRouterMCPServer {
                   type: "string",
                   description: "System prompt for the conversation",
                 },
+                save_directory: {
+                  type: "string",
+                  description: "Directory to save generated images (will be created if doesn't exist)",
+                },
               },
               required: ["model", "message"],
             },
           },
           {
             name: "compare_models",
-            description: "Compare responses from multiple models",
+            description: "Compare responses from multiple models (supports text and images)",
             inputSchema: {
               type: "object",
               properties: {
@@ -188,8 +320,50 @@ class OpenRouterMCPServer {
                   description: "Array of model IDs to compare",
                 },
                 message: {
-                  type: "string",
-                  description: "Message to send to all models",
+                  oneOf: [
+                    {
+                      type: "string",
+                      description: "Simple text message",
+                    },
+                    {
+                      type: "array",
+                      description: "Multimodal message with text and/or images",
+                      items: {
+                        oneOf: [
+                          {
+                            type: "object",
+                            properties: {
+                              type: { type: "string", enum: ["text"] },
+                              text: { type: "string" },
+                            },
+                            required: ["type", "text"],
+                          },
+                          {
+                            type: "object",
+                            properties: {
+                              type: { type: "string", enum: ["image_url"] },
+                              image_url: {
+                                type: "object",
+                                properties: {
+                                  url: { 
+                                    type: "string",
+                                    description: "Image URL or data URI (data:image/jpeg;base64,...)",
+                                  },
+                                  detail: {
+                                    type: "string",
+                                    enum: ["low", "high", "auto"],
+                                    description: "Image detail level",
+                                  },
+                                },
+                                required: ["url"],
+                              },
+                            },
+                            required: ["type", "image_url"],
+                          },
+                        ],
+                      },
+                    },
+                  ],
                 },
                 max_tokens: {
                   type: "number",
@@ -198,6 +372,38 @@ class OpenRouterMCPServer {
                 },
               },
               required: ["models", "message"],
+            },
+          },
+          {
+            name: "generate_image",
+            description: "Generate images using OpenRouter image models",
+            inputSchema: {
+              type: "object",
+              properties: {
+                model: {
+                  type: "string",
+                  description: "OpenRouter image model ID (e.g., 'google/gemini-2.5-flash-image-preview:free')",
+                },
+                prompt: {
+                  type: "string",
+                  description: "Text prompt for image generation",
+                },
+                max_tokens: {
+                  type: "number",
+                  description: "Maximum tokens in response",
+                  default: 1000,
+                },
+                temperature: {
+                  type: "number",
+                  description: "Temperature for response randomness",
+                  default: 0.7,
+                },
+                save_directory: {
+                  type: "string",
+                  description: "Directory to save generated images (will be created if doesn't exist)",
+                },
+              },
+              required: ["model", "prompt"],
             },
           },
           {
@@ -230,6 +436,8 @@ class OpenRouterMCPServer {
             return await this.chatWithModel(ChatRequestSchema.parse(args));
           case "compare_models":
             return await this.compareModels(CompareModelsSchema.parse(args));
+          case "generate_image":
+            return await this.generateImage(ImageGenerationSchema.parse(args));
           case "get_model_info":
             return await this.getModelInfo(args as { model: string });
           default:
@@ -328,7 +536,7 @@ class OpenRouterMCPServer {
   }
 
   private async chatWithModel(params: z.infer<typeof ChatRequestSchema>) {
-    const { model, message, max_tokens, temperature, system_prompt } = params;
+    const { model, message, max_tokens, temperature, system_prompt, save_directory } = params;
 
     const messages = [];
     if (system_prompt) {
@@ -350,12 +558,33 @@ class OpenRouterMCPServer {
     const result = response.data.choices[0].message.content;
     const usage = response.data.usage;
 
+    // Check if the response contains generated images
+    const responseImages = response.data.choices[0].message.images || [];
+    
+    // Save images if directory is specified
+    const savedImages = saveResponseImages(responseImages, save_directory);
+    
+    let responseText = `**Model:** ${model}\n**Response:** ${result}`;
+    
+    if (responseImages.length > 0) {
+      responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
+      savedImages.forEach((imgInfo, index) => {
+        responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
+        if (imgInfo.savedPath) {
+          responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+        }
+      });
+    }
+
+    responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
+
     return {
       content: [
         {
           type: "text" as const,
-          text: `**Model:** ${model}\n**Response:** ${result}\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`,
+          text: responseText,
         },
+        // Note: Images are saved to disk, not returned inline to avoid Base64 parsing issues
       ],
     };
   }
@@ -375,9 +604,12 @@ class OpenRouterMCPServer {
           { headers: OPENROUTER_CONFIG.headers }
         );
 
+        const responseImages = response.data.choices[0].message.images || [];
+
         return {
           model,
           response: response.data.choices[0].message.content,
+          images: responseImages,
           usage: response.data.usage,
           success: true,
         };
@@ -395,7 +627,12 @@ class OpenRouterMCPServer {
     const formattedResults = results
       .map((result) => {
         if (result.success) {
-          return `**${result.model}:**\n${result.response}\n*Tokens: ${result.usage.total_tokens}*`;
+          let modelResult = `**${result.model}:**\n${result.response}`;
+          if (result.images && result.images.length > 0) {
+            modelResult += `\n*Generated ${result.images.length} image(s)*`;
+          }
+          modelResult += `\n*Tokens: ${result.usage.total_tokens}*`;
+          return modelResult;
         } else {
           return `**${result.model}:** ❌ Error - ${result.error}`;
         }
@@ -408,6 +645,64 @@ class OpenRouterMCPServer {
           type: "text" as const,
           text: `Comparison of ${models.length} models:\n\n${formattedResults}`,
         },
+      ],
+    };
+  }
+
+  private async generateImage(params: z.infer<typeof ImageGenerationSchema>) {
+    const { model, prompt, max_tokens, temperature, save_directory } = params;
+
+    const response = await axios.post(
+      `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
+      {
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: prompt,
+              },
+            ],
+          },
+        ],
+        max_tokens,
+        temperature,
+      },
+      { headers: OPENROUTER_CONFIG.headers }
+    );
+
+    const result = response.data.choices[0].message.content;
+    const usage = response.data.usage;
+    // OpenRouter returns images in the message.images array
+    const responseImages = response.data.choices[0].message.images || [];
+    
+
+    // Save images if directory is specified
+    const savedImages = saveResponseImages(responseImages, save_directory);
+
+    let responseText = `**Model:** ${model}\n**Prompt:** ${prompt}\n**Response:** ${result}`;
+    
+    if (responseImages.length > 0) {
+      responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
+      savedImages.forEach((imgInfo, index) => {
+        responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
+        if (imgInfo.savedPath) {
+          responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+        }
+      });
+    }
+
+    responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: responseText,
+        },
+        // Note: Images are saved to disk, not returned inline to avoid Base64 parsing issues
       ],
     };
   }
