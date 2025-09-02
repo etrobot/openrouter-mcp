@@ -211,7 +211,7 @@ export function setupToolHandlers(server: Server): void {
         },
         {
           name: "edit_image",
-          description: "Edit images using OpenRouter image models (supports multiple images)",
+          description: "Edit or analyze images using OpenRouter image models (supports multiple images). Use text instructions to request image editing (e.g., 'make it brighter', 'add a sunset') or image analysis (e.g., 'describe this image', 'what do you see?')",
           inputSchema: {
             type: "object",
             properties: {
@@ -222,14 +222,14 @@ export function setupToolHandlers(server: Server): void {
               },
               instruction: {
                 type: "string",
-                description: "Text instruction for image editing (e.g., 'change this image', 'make it brighter', 'add a sunset')",
+                description: "Text instruction for image editing or analysis (e.g., 'make it brighter', 'add a sunset', 'describe this image', 'what objects do you see?')",
               },
               images: {
                 type: "array",
                 items: {
                   type: "string",
                 },
-                description: "Array of image URLs or data URIs (data:image/jpeg;base64,...) to edit",
+                description: "Array of image URLs or data URIs (data:image/jpeg;base64,...) to edit or analyze",
               },
               max_tokens: {
                 type: "number",
@@ -243,7 +243,7 @@ export function setupToolHandlers(server: Server): void {
               },
               save_directory: {
                 type: "string",
-                description: "Directory to save edited images (will be created if doesn't exist)",
+                description: "Directory to save edited images (will be created if doesn't exist). Not applicable for analysis-only requests.",
               },
             },
             required: ["instruction", "images"],
@@ -539,7 +539,7 @@ async function editImage(params: ImageEditingRequest) {
   let responseText = `**Model:** ${model}\n**Instruction:** ${instruction}\n**Input Images:** ${images.length} image(s)\n**Response:** ${result}`;
   
   if (responseImages.length > 0) {
-    responseText += `\n\n**Edited Images:** ${responseImages.length} image(s)`;
+    responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
     savedImages.forEach((imgInfo, index) => {
       responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
       if (imgInfo.savedPath) {
