@@ -2,6 +2,8 @@
 
 A Model Context Protocol (MCP) server that provides access to OpenRouter's extensive collection of 400+ AI models through Claude.
 
+[中文说明](README_cn.md)
+
 ## Features
 
 - 🤖 Access to 400+ language models including GPT-4, Claude, Gemini, Llama, and more
@@ -57,6 +59,10 @@ yarn build
   - Parameters: `instruction`, `images[]` (required), `model` (optional, defaults to google/gemini-2.5-flash-image-preview:free), `max_tokens`, `temperature`, `save_directory`
 - **`get_model_info`** - Get detailed information about a specific model
   - Parameters: `model`
+- **`gemini_direct_edit`** - Directly edit images using Google Gemini API (bypasses OpenRouter)
+  - Parameters: `text_prompt`, `image_path`, `output_path` (optional, defaults to "gemini-edited-image.png"), `api_key` (optional), `proxy_url` (optional)
+- **`gemini_native_generate`** - Generate images directly using Google Gemini API (bypasses OpenRouter)
+  - Parameters: `text_prompt`, `output_path` (optional, defaults to "gemini-native-image.png"), `api_key` (optional), `proxy_url` (optional)
 
 ### Available MCP Resources
 
@@ -101,6 +107,8 @@ Once configured, you can use these commands in Claude:
 "Generate an image of a sunset over mountains using google/gemini-2.5-flash-image-preview:free"
 "Edit this image to make it brighter and add more clouds"
 "Get detailed information about google/gemini-pro"
+"Edit this image of a cat to make it wear a hat using gemini_direct_edit"
+"Generate an image of a nano banana dish in a fancy restaurant with a Gemini theme using gemini_native_generate"
 ```
 
 ## Development

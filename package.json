@@ -18,6 +18,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "axios": "^1.6.0",
     "dotenv": "^16.3.0",
+    "https-proxy-agent": "^7.0.0",
     "zod": "^3.22.0"
   },
   "devDependencies": {

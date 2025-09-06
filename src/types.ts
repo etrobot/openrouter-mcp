@@ -54,8 +54,25 @@ export const CompareModelsSchema = z.object({
   max_tokens: z.number().optional().default(500).describe("Maximum tokens per response"),
 });
 
+export const GeminiDirectEditSchema = z.object({
+  text_prompt: z.string().describe("Text prompt for image editing (e.g., 'a cute cat')"),
+  image_path: z.string().describe("Path to the input image file"),
+  output_path: z.string().optional().default("gemini-edited-image.png").describe("Output path for the edited image"),
+  api_key: z.string().optional().describe("Gemini API key (if not provided, will use GEMINI_API_KEY environment variable)"),
+  proxy_url: z.string().optional().describe("HTTP proxy URL (e.g., 'http://127.0.0.1:7890')"),
+});
+
+export const GeminiNativeGenerateSchema = z.object({
+  text_prompt: z.string().describe("Text prompt for image generation (e.g., 'Create a picture of a nano banana dish in a fancy restaurant with a Gemini theme')"),
+  output_path: z.string().optional().default("gemini-native-image.png").describe("Output path for the generated image"),
+  api_key: z.string().optional().describe("Gemini API key (if not provided, will use GEMINI_API_KEY environment variable)"),
+  proxy_url: z.string().optional().describe("HTTP proxy URL (e.g., 'http://127.0.0.1:7890')"),
+});
+
 // Type exports for convenience
 export type ChatRequest = z.infer<typeof ChatRequestSchema>;
 export type ImageGenerationRequest = z.infer<typeof ImageGenerationSchema>;
 export type ImageEditingRequest = z.infer<typeof ImageEditingSchema>;
 export type CompareModelsRequest = z.infer<typeof CompareModelsSchema>;
+export type GeminiDirectEditRequest = z.infer<typeof GeminiDirectEditSchema>;
+export type GeminiNativeGenerateRequest = z.infer<typeof GeminiNativeGenerateSchema>;

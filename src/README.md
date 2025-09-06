@@ -48,7 +48,10 @@ src/
 - **Schemas**:
   - `ChatRequestSchema`
   - `ImageGenerationSchema`
+  - `ImageEditingSchema`
   - `CompareModelsSchema`
+  - `GeminiDirectEditSchema`
+  - `GeminiNativeGenerateSchema`
   - Content schemas for multimodal support
 
 ### `handlers/resources.ts`
@@ -67,7 +70,10 @@ src/
   - `chat_with_model` - Chat with specific model
   - `compare_models` - Compare multiple models
   - `generate_image` - Generate images
+  - `edit_image` - Edit images
   - `get_model_info` - Get model details
+  - `gemini_direct_edit` - Directly edit images using Google Gemini API
+  - `gemini_native_generate` - Generate images directly using Google Gemini API
 
 ### `utils/image.ts`
 - **Purpose**: Image handling utilities
@@ -113,3 +119,4 @@ import { saveBase64Image } from './src/utils/image.js';
 - Environment variables and configuration work identically
 - All tools and resources function as before
 - Image handling behavior is preserved
+- Added new tools: `gemini_direct_edit` and `gemini_native_generate` for direct Gemini API access
