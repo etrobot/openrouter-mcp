@@ -4,8 +4,9 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import axios from "axios";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
+import { join, dirname } from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { OPENROUTER_CONFIG } from "../config.js";
 import { saveResponseImages } from "../utils/image.js";
@@ -14,14 +15,10 @@ import {
   CompareModelsSchema,
   ImageGenerationSchema,
   ImageEditingSchema,
-  GeminiDirectEditSchema,
-  GeminiNativeGenerateSchema,
   type ChatRequest,
   type CompareModelsRequest,
   type ImageGenerationRequest,
   type ImageEditingRequest,
-  type GeminiDirectEditRequest,
-  type GeminiNativeGenerateRequest,
 } from "../types.js";
 
 export function setupToolHandlers(server: Server): void {
@@ -185,7 +182,7 @@ export function setupToolHandlers(server: Server): void {
         },
         {
           name: "generate_image",
-          description: "Generate images using OpenRouter image models",
+          description: "Generate images with automatic fallback (tries Gemini direct API first, then OpenRouter)",
           inputSchema: {
             type: "object",
             properties: {
@@ -218,7 +215,7 @@ export function setupToolHandlers(server: Server): void {
         },
         {
           name: "edit_image",
-          description: "Edit or analyze images using OpenRouter image models (supports multiple images). Use text instructions to request image editing (e.g., 'make it brighter', 'add a sunset') or image analysis (e.g., 'describe this image', 'what do you see?')",
+          description: "Edit or analyze images with automatic fallback (tries Gemini direct API first, then OpenRouter). Use text instructions to request image editing (e.g., 'make it brighter', 'add a sunset') or image analysis (e.g., 'describe this image', 'what do you see?')",
           inputSchema: {
             type: "object",
             properties: {
@@ -270,64 +267,6 @@ export function setupToolHandlers(server: Server): void {
             required: ["model"],
           },
         },
-        {
-          name: "gemini_direct_edit",
-          description: "Directly edit images using Google Gemini API (bypasses OpenRouter)",
-          inputSchema: {
-            type: "object",
-            properties: {
-              text_prompt: {
-                type: "string",
-                description: "Text prompt for image editing (e.g., 'a cute cat')",
-              },
-              image_path: {
-                type: "string",
-                description: "Path to the input image file",
-              },
-              output_path: {
-                type: "string",
-                description: "Output path for the edited image",
-                default: "gemini-edited-image.png",
-              },
-              api_key: {
-                type: "string",
-                description: "Gemini API key (if not provided, will use GEMINI_API_KEY environment variable)",
-              },
-              proxy_url: {
-                type: "string",
-                description: "HTTP proxy URL (e.g., 'http://127.0.0.1:7890')",
-              },
-            },
-            required: ["text_prompt", "image_path"],
-          },
-        },
-        {
-          name: "gemini_native_generate",
-          description: "Generate images directly using Google Gemini API (bypasses OpenRouter)",
-          inputSchema: {
-            type: "object",
-            properties: {
-              text_prompt: {
-                type: "string",
-                description: "Text prompt for image generation (e.g., 'Create a picture of a nano banana dish in a fancy restaurant with a Gemini theme')",
-              },
-              output_path: {
-                type: "string",
-                description: "Output path for the generated image",
-                default: "gemini-native-image.png",
-              },
-              api_key: {
-                type: "string",
-                description: "Gemini API key (if not provided, will use GEMINI_API_KEY environment variable)",
-              },
-              proxy_url: {
-                type: "string",
-                description: "HTTP proxy URL (e.g., 'http://127.0.0.1:7890')",
-              },
-            },
-            required: ["text_prompt"],
-          },
-        },
       ],
     };
   });
@@ -350,10 +289,6 @@ export function setupToolHandlers(server: Server): void {
           return await editImage(ImageEditingSchema.parse(args));
         case "get_model_info":
           return await getModelInfo(args as { model: string });
-        case "gemini_direct_edit":
-          return await geminiDirectEdit(GeminiDirectEditSchema.parse(args));
-        case "gemini_native_generate":
-          return await geminiNativeGenerate(GeminiNativeGenerateSchema.parse(args));
         default:
           throw new Error(`Unknown tool: ${name}`);
       }
@@ -507,126 +442,385 @@ async function compareModels(params: CompareModelsRequest) {
   };
 }
 
+// Helper function to download image from URL to temporary file
+async function downloadImageToTemp(imageUrl: string): Promise<string> {
+  try {
+    if (imageUrl.startsWith('data:')) {
+      // Handle data URI
+      const base64Data = imageUrl.split(',')[1];
+      const tempPath = `temp_image_${Date.now()}.jpg`;
+      const imageBuffer = Buffer.from(base64Data, 'base64');
+      writeFileSync(tempPath, imageBuffer);
+      return tempPath;
+    } else {
+      // Handle HTTP/HTTPS URL
+      const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+      const tempPath = `temp_image_${Date.now()}.jpg`;
+      writeFileSync(tempPath, response.data);
+      return tempPath;
+    }
+  } catch (error) {
+    throw new Error(`Failed to download image from ${imageUrl}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+// Helper function to clean up temporary files
+function cleanupTempFiles(paths: string[]) {
+  paths.forEach(path => {
+    try {
+      execSync(`rm -f "${path}"`);
+    } catch (error) {
+      // Ignore cleanup errors
+    }
+  });
+}
+
 async function generateImage(params: ImageGenerationRequest) {
   const { model, prompt, max_tokens, temperature, save_directory } = params;
+  
+  // Step 1: Try Gemini direct API first (if available)
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+  
+  if (geminiApiKey) {
+    try {
+      console.log("🔄 Trying Gemini direct API first...");
+      
+      // Use gemini native generate approach
+      const requestBody = {
+        contents: [{
+          parts: [{ text: prompt }]
+        }]
+      };
 
-  const response = await axios.post(
-    `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
-    {
-      model,
-      messages: [
-        {
-          role: "user",
+      const axiosConfig: any = {
+        headers: {
+          "x-goog-api-key": geminiApiKey,
+          "Content-Type": "application/json"
+        }
+      };
+
+      if (proxyUrl) {
+        axiosConfig.httpsAgent = new HttpsProxyAgent(proxyUrl);
+        console.log(`Using proxy: ${proxyUrl}`);
+      }
+
+      const geminiResponse = await axios.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent",
+        requestBody,
+        axiosConfig
+      );
+
+      // Extract image data from Gemini response
+      const responseData = geminiResponse.data;
+      let imageData: string | null = null;
+      
+      if (responseData.candidates && responseData.candidates[0] && 
+          responseData.candidates[0].content && responseData.candidates[0].content.parts) {
+        
+        for (const part of responseData.candidates[0].content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+            imageData = part.inlineData.data;
+            break;
+          }
+        }
+      }
+
+      if (imageData) {
+        // Success with Gemini direct API
+        const outputPath = save_directory ? `${save_directory}/gemini-generated-${Date.now()}.png` : `gemini-generated-${Date.now()}.png`;
+        const imageBuffer = Buffer.from(imageData, 'base64');
+        writeFileSync(outputPath, imageBuffer);
+
+        let responseText = `**API:** Gemini Direct ✅\n**Model:** gemini-2.5-flash-image-preview\n**Prompt:** ${prompt}`;
+        
+        if (proxyUrl) {
+          responseText += `\n**Proxy:** ${proxyUrl}`;
+        }
+        
+        responseText += `\n**Generated Image:** ${outputPath}\n\nImage saved successfully using Gemini direct API!`;
+
+        return {
           content: [
             {
-              type: "text",
-              text: prompt,
+              type: "text" as const,
+              text: responseText,
             },
           ],
-        },
-      ],
-      max_tokens,
-      temperature,
-    },
-    { headers: OPENROUTER_CONFIG.headers }
-  );
-
-  const result = response.data.choices[0].message.content;
-  const usage = response.data.usage;
-  // OpenRouter returns images in the message.images array
-  const responseImages = response.data.choices[0].message.images || [];
-  
-
-  // Save images if directory is specified
-  const savedImages = saveResponseImages(responseImages, save_directory);
-
-  let responseText = `**Model:** ${model}\n**Prompt:** ${prompt}\n**Response:** ${result}`;
-  
-  if (responseImages.length > 0) {
-    responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
-    savedImages.forEach((imgInfo, index) => {
-      responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
-      if (imgInfo.savedPath) {
-        responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+        };
       }
-    });
+    } catch (geminiError) {
+      console.log("❌ Gemini direct API failed:", geminiError instanceof Error ? geminiError.message : String(geminiError));
+      console.log("🔄 Falling back to OpenRouter...");
+    }
+  } else {
+    console.log("⚠️ No GEMINI_API_KEY found, using OpenRouter directly");
   }
 
-  responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
-
-  return {
-    content: [
+  // Step 2: Fallback to OpenRouter
+  try {
+    const response = await axios.post(
+      `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
       {
-        type: "text" as const,
-        text: responseText,
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: prompt,
+              },
+            ],
+          },
+        ],
+        max_tokens,
+        temperature,
       },
-    ],
-  };
+      { headers: OPENROUTER_CONFIG.headers }
+    );
+
+    const result = response.data.choices[0].message.content;
+    const usage = response.data.usage;
+    // OpenRouter returns images in the message.images array
+    const responseImages = response.data.choices[0].message.images || [];
+    
+
+    // Save images if directory is specified
+    const savedImages = saveResponseImages(responseImages, save_directory);
+
+    let responseText = `**API:** OpenRouter (fallback)\n**Model:** ${model}\n**Prompt:** ${prompt}\n**Response:** ${result}`;
+    
+    if (responseImages.length > 0) {
+      responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
+      savedImages.forEach((imgInfo, index) => {
+        responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
+        if (imgInfo.savedPath) {
+          responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+        }
+      });
+    }
+
+    responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: responseText,
+        },
+      ],
+    };
+  } catch (openrouterError) {
+    throw new Error(`Both Gemini direct API and OpenRouter failed. OpenRouter error: ${openrouterError instanceof Error ? openrouterError.message : String(openrouterError)}`);
+  }
 }
 
 async function editImage(params: ImageEditingRequest) {
   const { model, instruction, images, max_tokens, temperature, save_directory } = params;
-
-  // Build the content array with text instruction and image URLs
-  const content = [
-    {
-      type: "text",
-      text: instruction,
-    },
-    ...images.map(imageUrl => ({
-      type: "image_url",
-      image_url: {
-        url: imageUrl,
-      },
-    })),
-  ];
-
-  const response = await axios.post(
-    `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
-    {
-      model,
-      messages: [
-        {
-          role: "user",
-          content,
-        },
-      ],
-      max_tokens,
-      temperature,
-    },
-    { headers: OPENROUTER_CONFIG.headers }
-  );
-
-  const result = response.data.choices[0].message.content;
-  const usage = response.data.usage;
-  // OpenRouter returns images in the message.images array
-  const responseImages = response.data.choices[0].message.images || [];
-
-  // Save images if directory is specified
-  const savedImages = saveResponseImages(responseImages, save_directory);
-
-  let responseText = `**Model:** ${model}\n**Instruction:** ${instruction}\n**Input Images:** ${images.length} image(s)\n**Response:** ${result}`;
   
-  if (responseImages.length > 0) {
-    responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
-    savedImages.forEach((imgInfo, index) => {
-      responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
-      if (imgInfo.savedPath) {
-        responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+  // Step 1: Try Gemini direct API first (if available)
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+  
+  let tempFiles: string[] = [];
+  
+  if (geminiApiKey && images.length > 0) {
+    try {
+      console.log("🔄 Trying Gemini direct API first...");
+      
+      // Download the first image to a temporary file for Gemini API
+      const imagePath = await downloadImageToTemp(images[0]);
+      tempFiles.push(imagePath);
+      
+      // Check if image file exists
+      try {
+        readFileSync(imagePath);
+      } catch (error) {
+        throw new Error(`Downloaded image file not found: ${imagePath}`);
       }
-    });
+
+      // Determine base64 flags based on system
+      let base64Flags = "-w0";
+      try {
+        const versionOutput = execSync("base64 --version 2>&1", { encoding: "utf8" });
+        if (versionOutput.includes("FreeBSD")) {
+          base64Flags = "--input";
+        }
+      } catch (error) {
+        // Default to -w0 if version check fails
+      }
+
+      // Convert image to base64
+      const base64Command = `base64 ${base64Flags} "${imagePath}"`;
+      const imageBase64 = execSync(base64Command, { encoding: "utf8" }).trim();
+
+      // Make request to Gemini API
+      const requestBody = {
+        contents: [{
+          parts: [
+            { text: instruction },
+            {
+              inline_data: {
+                mime_type: "image/jpeg",
+                data: imageBase64
+              }
+            }
+          ]
+        }]
+      };
+
+      const axiosConfig: any = {
+        headers: {
+          "x-goog-api-key": geminiApiKey,
+          "Content-Type": "application/json"
+        }
+      };
+
+      if (proxyUrl) {
+        axiosConfig.httpsAgent = new HttpsProxyAgent(proxyUrl);
+        console.log(`Using proxy: ${proxyUrl}`);
+      }
+
+      const geminiResponse = await axios.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent",
+        requestBody,
+        axiosConfig
+      );
+
+      // Extract image data from Gemini response
+      const responseData = geminiResponse.data;
+      let imageData: string | null = null;
+      
+      if (responseData.candidates && responseData.candidates[0] && 
+          responseData.candidates[0].content && responseData.candidates[0].content.parts) {
+        
+        for (const part of responseData.candidates[0].content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+            imageData = part.inlineData.data;
+            break;
+          }
+        }
+      }
+
+      if (imageData) {
+        // Success with Gemini direct API
+        const outputPath = save_directory ? `${save_directory}/gemini-edited-${Date.now()}.png` : `gemini-edited-${Date.now()}.png`;
+        
+        // Create directory if it doesn't exist
+        if (save_directory) {
+          try {
+            mkdirSync(save_directory, { recursive: true });
+          } catch (error) {
+            // Directory might already exist
+          }
+        }
+        
+        const imageBuffer = Buffer.from(imageData, 'base64');
+        writeFileSync(outputPath, imageBuffer);
+
+        // Cleanup temporary files
+        cleanupTempFiles(tempFiles);
+
+        let responseText = `**API:** Gemini Direct ✅\n**Model:** gemini-2.5-flash-image-preview\n**Instruction:** ${instruction}\n**Input Images:** ${images.length} image(s)`;
+        
+        if (proxyUrl) {
+          responseText += `\n**Proxy:** ${proxyUrl}`;
+        }
+        
+        responseText += `\n**Generated Image:** ${outputPath}\n\nImage edited successfully using Gemini direct API!`;
+
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: responseText,
+            },
+          ],
+        };
+      }
+    } catch (geminiError) {
+      console.log("❌ Gemini direct API failed:", geminiError instanceof Error ? geminiError.message : String(geminiError));
+      console.log("🔄 Falling back to OpenRouter...");
+      
+      // Cleanup temporary files on error
+      cleanupTempFiles(tempFiles);
+      tempFiles = [];
+    }
+  } else {
+    if (!geminiApiKey) {
+      console.log("⚠️ No GEMINI_API_KEY found, using OpenRouter directly");
+    }
+    if (images.length === 0) {
+      console.log("⚠️ No images provided, using OpenRouter directly");
+    }
   }
 
-  responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
-
-  return {
-    content: [
+  // Step 2: Fallback to OpenRouter
+  try {
+    // Build the content array with text instruction and image URLs
+    const content = [
       {
-        type: "text" as const,
-        text: responseText,
+        type: "text",
+        text: instruction,
       },
-    ],
-  };
+      ...images.map(imageUrl => ({
+        type: "image_url",
+        image_url: {
+          url: imageUrl,
+        },
+      })),
+    ];
+
+    const response = await axios.post(
+      `${OPENROUTER_CONFIG.baseURL}/chat/completions`,
+      {
+        model,
+        messages: [
+          {
+            role: "user",
+            content,
+          },
+        ],
+        max_tokens,
+        temperature,
+      },
+      { headers: OPENROUTER_CONFIG.headers }
+    );
+
+    const result = response.data.choices[0].message.content;
+    const usage = response.data.usage;
+    // OpenRouter returns images in the message.images array
+    const responseImages = response.data.choices[0].message.images || [];
+
+    // Save images if directory is specified
+    const savedImages = saveResponseImages(responseImages, save_directory);
+
+    let responseText = `**API:** OpenRouter (fallback)\n**Model:** ${model}\n**Instruction:** ${instruction}\n**Input Images:** ${images.length} image(s)\n**Response:** ${result}`;
+    
+    if (responseImages.length > 0) {
+      responseText += `\n\n**Generated Images:** ${responseImages.length} image(s)`;
+      savedImages.forEach((imgInfo, index) => {
+        responseText += `\n- Image ${index + 1}: ${imgInfo.url.substring(0, 50)}...`;
+        if (imgInfo.savedPath) {
+          responseText += `\n  Saved to: ${imgInfo.savedPath}`;
+        }
+      });
+    }
+
+    responseText += `\n\n**Usage:**\n- Prompt tokens: ${usage.prompt_tokens}\n- Completion tokens: ${usage.completion_tokens}\n- Total tokens: ${usage.total_tokens}`;
+
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: responseText,
+        },
+      ],
+    };
+  } catch (openrouterError) {
+    throw new Error(`Both Gemini direct API and OpenRouter failed. OpenRouter error: ${openrouterError instanceof Error ? openrouterError.message : String(openrouterError)}`);
+  }
 }
 
 async function getModelInfo(params: { model: string }) {
@@ -650,212 +844,3 @@ async function getModelInfo(params: { model: string }) {
   };
 }
 
-async function geminiDirectEdit(params: GeminiDirectEditRequest) {
-  const { text_prompt, image_path, output_path, api_key, proxy_url } = params;
-
-  try {
-    // Get API key from parameter or environment
-    const geminiApiKey = api_key || process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
-      throw new Error("Gemini API key not provided. Set GEMINI_API_KEY environment variable or pass api_key parameter.");
-    }
-
-    // Get proxy URL from parameter or environment
-    const proxyUrl = proxy_url || process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-
-    // Check if image file exists
-    try {
-      readFileSync(image_path);
-    } catch (error) {
-      throw new Error(`Image file not found: ${image_path}`);
-    }
-
-    // Determine base64 flags based on system
-    let base64Flags = "-w0";
-    try {
-      const versionOutput = execSync("base64 --version 2>&1", { encoding: "utf8" });
-      if (versionOutput.includes("FreeBSD")) {
-        base64Flags = "--input";
-      }
-    } catch (error) {
-      // Default to -w0 if version check fails
-    }
-
-    // Convert image to base64
-    const base64Command = `base64 ${base64Flags} "${image_path}"`;
-    const imageBase64 = execSync(base64Command, { encoding: "utf8" }).trim();
-
-    // Make request to Gemini API
-    const requestBody = {
-      contents: [{
-        parts: [
-          { text: text_prompt },
-          {
-            inline_data: {
-              mime_type: "image/jpeg",
-              data: imageBase64
-            }
-          }
-        ]
-      }]
-    };
-
-    // Configure axios options with optional proxy
-    const axiosConfig: any = {
-      headers: {
-        "x-goog-api-key": geminiApiKey,
-        "Content-Type": "application/json"
-      }
-    };
-
-    // Add proxy agent if proxy URL is provided
-    if (proxyUrl) {
-      axiosConfig.httpsAgent = new HttpsProxyAgent(proxyUrl);
-      console.log(`Using proxy: ${proxyUrl}`);
-    }
-
-    const response = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent",
-      requestBody,
-      axiosConfig
-    );
-
-    // Extract image data from response
-    const responseData = response.data;
-    
-    // Navigate through the response structure to find the image data
-    let imageData: string | null = null;
-    
-    if (responseData.candidates && responseData.candidates[0] && 
-        responseData.candidates[0].content && responseData.candidates[0].content.parts) {
-      
-      for (const part of responseData.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-          imageData = part.inlineData.data;
-          break;
-        }
-      }
-    }
-    
-    if (!imageData) {
-      console.log("Full response structure:", JSON.stringify(responseData, null, 2));
-      throw new Error("No image data found in Gemini response");
-    }
-    
-    // Decode base64 and save image
-    const imageBuffer = Buffer.from(imageData, 'base64');
-    writeFileSync(output_path, imageBuffer);
-
-    let statusMessage = `Successfully edited image using Gemini API!\n\n**Input:** ${image_path}\n**Prompt:** ${text_prompt}\n**Output:** ${output_path}`;
-    
-    if (proxyUrl) {
-      statusMessage += `\n**Proxy:** ${proxyUrl}`;
-    }
-    
-    statusMessage += `\n\nImage saved successfully.`;
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: statusMessage,
-        },
-      ],
-    };
-
-  } catch (error) {
-    console.error("Gemini direct edit error:", error);
-    throw new Error(`Failed to edit image with Gemini: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}
-
-async function geminiNativeGenerate(params: GeminiNativeGenerateRequest) {
-  const { text_prompt, output_path, api_key, proxy_url } = params;
-
-  try {
-    // Get API key from parameter or environment
-    const geminiApiKey = api_key || process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
-      throw new Error("Gemini API key not provided. Set GEMINI_API_KEY environment variable or pass api_key parameter.");
-    }
-
-    // Get proxy URL from parameter or environment
-    const proxyUrl = proxy_url || process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-
-    // Make request to Gemini API for image generation (no input image)
-    const requestBody = {
-      contents: [{
-        parts: [
-          { text: text_prompt }
-        ]
-      }]
-    };
-
-    // Configure axios options with optional proxy
-    const axiosConfig: any = {
-      headers: {
-        "x-goog-api-key": geminiApiKey,
-        "Content-Type": "application/json"
-      }
-    };
-
-    // Add proxy agent if proxy URL is provided
-    if (proxyUrl) {
-      axiosConfig.httpsAgent = new HttpsProxyAgent(proxyUrl);
-      console.log(`Using proxy: ${proxyUrl}`);
-    }
-
-    const response = await axios.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent",
-      requestBody,
-      axiosConfig
-    );
-
-    // Extract image data from response
-    const responseData = response.data;
-    
-    // Navigate through the response structure to find the image data
-    let imageData: string | null = null;
-    
-    if (responseData.candidates && responseData.candidates[0] && 
-        responseData.candidates[0].content && responseData.candidates[0].content.parts) {
-      
-      for (const part of responseData.candidates[0].content.parts) {
-        if (part.inlineData && part.inlineData.data) {
-          imageData = part.inlineData.data;
-          break;
-        }
-      }
-    }
-    
-    if (!imageData) {
-      console.log("Full response structure:", JSON.stringify(responseData, null, 2));
-      throw new Error("No image data found in Gemini response");
-    }
-    
-    // Decode base64 and save image
-    const imageBuffer = Buffer.from(imageData, 'base64');
-    writeFileSync(output_path, imageBuffer);
-
-    let statusMessage = `Successfully generated image using Gemini API!\n\n**Prompt:** ${text_prompt}\n**Output:** ${output_path}`;
-    
-    if (proxyUrl) {
-      statusMessage += `\n**Proxy:** ${proxyUrl}`;
-    }
-    
-    statusMessage += `\n\nImage saved successfully.`;
-
-    return {
-      content: [
-        {
-          type: "text" as const,
-          text: statusMessage,
-        },
-      ],
-    };
-
-  } catch (error) {
-    console.error("Gemini native generate error:", error);
-    throw new Error(`Failed to generate image with Gemini: ${error instanceof Error ? error.message : String(error)}`);
-  }
-}

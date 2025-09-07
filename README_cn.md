@@ -1,6 +1,6 @@
 # OpenRouter MCP 服务器
 
-一个模型上下文协议 (MCP) 服务器，通过 Claude 提供对 OpenRouter 400 多种 AI 模型的访问。
+一个模型上下文协议 (MCP) 服务器，通过 Claude 提供对 OpenRouter 400 多种 AI 模型的访问，并集成 Google Gemini 直连 API 智能回退机制以获得最佳性能。
 
 ## 功能
 
@@ -8,7 +8,9 @@
 - 🔍 列出和搜索可用模型及其定价信息
 - 💬 通过统一接口与任何模型聊天
 - 🔄 并排比较多个模型的响应
-- 🎨 使用 OpenRouter 的图像模型生成和编辑图像
+- 🎨 **智能图像生成和编辑** 自动回退机制 (Gemini 直连 → OpenRouter)
+- 🚀 **更快的响应速度** 通过 Gemini 直连 API 集成
+- 🌐 **代理支持** 适合中国大陆及其他地区用户
 - 📊 获取模型的详细信息，包括上下文限制和功能
 - 🔧 与 Claude Desktop 和 Claude Code 无缝集成
 
@@ -32,15 +34,33 @@ yarn build
 
 ## 配置
 
-1. 从 [OpenRouter](https://openrouter.ai/keys) 获取您的 OpenRouter API 密钥
+1. **获取您的 API 密钥:**
+   - 从 [OpenRouter](https://openrouter.ai/keys) 获取 OpenRouter API 密钥
+   - (可选但推荐) 从 [Google AI Studio](https://aistudio.google.com/app/apikey) 获取 Gemini API 密钥
+
 2. 复制 `.env.example` 到 `.env`:
    ```bash
    cp .env.example .env
    ```
+
 3. 编辑 `.env` 并添加您的 API 密钥:
    ```env
-   OPENROUTER_API_KEY=your_api_key_here
+   # 必需: OpenRouter API 密钥 (回退选项)
+   OPENROUTER_API_KEY=your_openrouter_api_key_here
+   
+   # 可选但推荐: Gemini API 密钥 (图像任务的首选)
+   GEMINI_API_KEY=your_gemini_api_key_here
+   
+   # 可选: 代理设置 (适合中国大陆用户)
+   HTTP_PROXY=http://127.0.0.1:7890
+   HTTPS_PROXY=http://127.0.0.1:7890
    ```
+
+### 配置选项
+
+- **最佳体验**: 配置两个 API 密钥以获得最佳性能和可靠性
+- **速度优先**: 仅配置 `GEMINI_API_KEY` 以获得最快的图像生成/编辑速度
+- **兼容模式**: 仅配置 `OPENROUTER_API_KEY` 使用传统的 OpenRouter 模式
 
 ## 使用方法
 
