@@ -721,14 +721,26 @@ async function geminiDirectEdit(params: GeminiDirectEditRequest) {
     );
 
     // Extract image data from response
-    const responseText = JSON.stringify(response.data);
-    const dataMatch = responseText.match(/"data": "([^"]*)"/);
+    const responseData = response.data;
     
-    if (!dataMatch) {
+    // Navigate through the response structure to find the image data
+    let imageData: string | null = null;
+    
+    if (responseData.candidates && responseData.candidates[0] && 
+        responseData.candidates[0].content && responseData.candidates[0].content.parts) {
+      
+      for (const part of responseData.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          imageData = part.inlineData.data;
+          break;
+        }
+      }
+    }
+    
+    if (!imageData) {
+      console.log("Full response structure:", JSON.stringify(responseData, null, 2));
       throw new Error("No image data found in Gemini response");
     }
-
-    const imageData = dataMatch[1];
     
     // Decode base64 and save image
     const imageBuffer = Buffer.from(imageData, 'base64');
@@ -800,14 +812,26 @@ async function geminiNativeGenerate(params: GeminiNativeGenerateRequest) {
     );
 
     // Extract image data from response
-    const responseText = JSON.stringify(response.data);
-    const dataMatch = responseText.match(/"data": "([^"]*)"/);
+    const responseData = response.data;
     
-    if (!dataMatch) {
+    // Navigate through the response structure to find the image data
+    let imageData: string | null = null;
+    
+    if (responseData.candidates && responseData.candidates[0] && 
+        responseData.candidates[0].content && responseData.candidates[0].content.parts) {
+      
+      for (const part of responseData.candidates[0].content.parts) {
+        if (part.inlineData && part.inlineData.data) {
+          imageData = part.inlineData.data;
+          break;
+        }
+      }
+    }
+    
+    if (!imageData) {
+      console.log("Full response structure:", JSON.stringify(responseData, null, 2));
       throw new Error("No image data found in Gemini response");
     }
-
-    const imageData = dataMatch[1];
     
     // Decode base64 and save image
     const imageBuffer = Buffer.from(imageData, 'base64');
